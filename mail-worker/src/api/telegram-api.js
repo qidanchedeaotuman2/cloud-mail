@@ -6,4 +6,3 @@ app.get('/telegram/getEmail/:token', async (c) => {
 	c.header('Cache-Control', 'public, max-age=604800, immutable');
 	return c.html(content)
 });
-
