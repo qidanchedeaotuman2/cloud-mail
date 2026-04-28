@@ -7,7 +7,12 @@ app.get('/telegram/getEmail/:token', async (c) => {
     return c.html(content)
 });
 
-// 👇 新增的接收 TG 消息的路由入口
+// 👇 新增的可视化写信面板网页入口 (给 Telegram Web App 用的)
+app.get('/telegram/webapp', async (c) => {
+    return await telegramService.renderWebApp(c);
+});
+
+// 👇 接收 TG 消息的 Webhook 路由入口
 app.post('/telegram/webhook', async (c) => {
     return await telegramService.handleWebhook(c);
 });
