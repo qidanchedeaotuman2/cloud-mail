@@ -12,36 +12,38 @@ import emailMsgTemplate from '../template/email-msg';
 import emailTextTemplate from '../template/email-text';
 import emailHtmlTemplate from '../template/email-html';
 import verifyUtils from '../utils/verify-utils';
-import domainUtils from "../utils/domain-uitls";
 
 const telegramService = {
 
     async getEmailContent(c, params) {
-        const { token } = params
+        const { token } = params;
         const result = await jwtUtils.verifyToken(c, token);
-        if (!result) { return emailTextTemplate('Access denied') }
+        if (!result) return emailTextTemplate('Access denied');
         const emailRow = await orm(c).select().from(email).where(eq(email.emailId, result.emailId)).get();
         if (emailRow) {
             if (emailRow.content) {
                 const { r2Domain } = await settingService.query(c);
-                return emailHtmlTemplate(emailRow.content || '', r2Domain)
+                return emailHtmlTemplate(emailRow.content || '', r2Domain);
             } else {
-                return emailTextTemplate(emailRow.text || '')
+                return emailTextTemplate(emailRow.text || '');
             }
         } else {
-            return emailTextTemplate('The email does not exist')
+            return emailTextTemplate('The email does not exist');
         }
     },
 
     async sendEmailToBot(c, email) {
+        // 原有收取邮件转发给 TG 的逻辑保持不变
         const { tgBotToken, tgChatId, customDomain, tgMsgTo, tgMsgFrom, tgMsgText } = await settingService.query(c);
         const tgChatIds = tgChatId.split(',');
-        const jwtToken = await jwtUtils.generateToken(c, { emailId: email.emailId })
-        const webAppUrl = customDomain ? `${domainUtils.toOssDomain(customDomain)}/api/telegram/getEmail/${jwtToken}` : 'https://www.cloudflare.com/404'
+        const jwtToken = await jwtUtils.generateToken(c, { emailId: email.emailId });
+        // 为了安全起见，这里也加上 https:// 的强制保障
+        let safeDomain = customDomain.startsWith('http') ? customDomain : `https://${customDomain}`;
+        const webAppUrl = customDomain ? `${safeDomain}/api/telegram/getEmail/${jwtToken}` : 'https://www.cloudflare.com/404';
 
         await Promise.all(tgChatIds.map(async chatId => {
             try {
-                const res = await fetch(`https://api.telegram.org/bot${tgBotToken}/sendMessage`, {
+                await fetch(`https://api.telegram.org/bot${tgBotToken}/sendMessage`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -51,20 +53,16 @@ const telegramService = {
                         reply_markup: { inline_keyboard: [[{ text: '查看', web_app: { url: webAppUrl } }]] }
                     })
                 });
-            } catch (e) {
-                console.error(`转发 Telegram 失败:`, e.message);
-            }
+            } catch (e) {}
         }));
     },
 
-    // ===== 🔥 新增：生成前端 HTML 可视化表单的方法 =====
     async renderWebApp(c) {
         const settings = await settingService.query(c);
         const resendTokens = settings.resendTokens || {};
         const domains = Object.keys(resendTokens);
         if (domains.length === 0) domains.push('未配置域名');
 
-        // 根据配置的域名，动态生成下拉菜单的选项
         const optionsHtml = domains.map(d => `<option value="${d}">${d}</option>`).join('');
 
         const html = `
@@ -97,12 +95,12 @@ const telegramService = {
                 </div>
             </div>
             <div class="form-group">
-                <label>收件人邮箱</label>
+                <label>收件人</label>
                 <input type="email" id="toEmail" placeholder="例如: 123@qq.com" />
             </div>
             <div class="form-group">
                 <label>邮件标题</label>
-                <input type="text" id="subject" placeholder="输入邮件标题" />
+                <input type="text" id="subject" placeholder="输入标题" />
             </div>
             <div class="form-group">
                 <label>邮件正文</label>
@@ -112,7 +110,7 @@ const telegramService = {
 
             <script>
                 let tg = window.Telegram.WebApp;
-                tg.expand(); // 自动全屏展开
+                tg.expand();
                 tg.ready();
 
                 function sendData() {
@@ -127,22 +125,13 @@ const telegramService = {
                         return;
                     }
 
-                    let data = {
-                        action: 'send_email',
-                        fromAddress: prefix + '@' + domain,
-                        toEmail: toEmail,
-                        subject: subject,
-                        content: content
-                    };
-
-                    // 把打包好的数据发给机器人，并自动关闭面板
+                    let data = { action: 'send_email', fromAddress: prefix + '@' + domain, toEmail, subject, content };
                     tg.sendData(JSON.stringify(data));
                     tg.close();
                 }
             </script>
         </body>
-        </html>
-        `;
+        </html>`;
         return c.html(html);
     },
 
@@ -154,89 +143,109 @@ const telegramService = {
             if (!message) return c.text('OK');
 
             const settings = await settingService.query(c);
-            const { tgChatId, tgBotToken, resendTokens, customDomain } = settings;
+            const { tgChatId, tgBotToken, resendTokens } = settings;
             const allowedChatIds = tgChatId.split(',');
             const incomingChatId = String(message.chat.id);
 
             if (!allowedChatIds.includes(incomingChatId)) return c.text('OK');
 
-            // ===== 🔥 核心升级 1：处理面板传回来的数据 =====
-            const webAppData = message.web_app_data; 
-            
-            if (webAppData) {
+            // 1. 处理 Web App 传回来的数据
+            if (message.web_app_data) {
                 try {
-                    const data = JSON.parse(webAppData.data);
+                    const data = JSON.parse(message.web_app_data.data);
                     if (data.action === 'send_email') {
                         const { fromAddress, toEmail, subject, content } = data;
                         const fromDomain = fromAddress.split('@')[1];
                         const resendKey = resendTokens ? resendTokens[fromDomain] : null;
 
-                        if (!resendKey) {
-                            await fetch(`https://api.telegram.org/bot${tgBotToken}/sendMessage`, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ chat_id: incomingChatId, text: `❌ 发送失败：未配置域名 [${fromDomain}] 的密钥！` })
-                            });
-                            return c.text('OK');
-                        }
+                        if (!resendKey) return c.text('OK'); // 防止报错
 
-                        // 发送给 Resend
                         const sendRes = await fetch('https://api.resend.com/emails', {
                             method: 'POST',
                             headers: { 'Authorization': `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ from: fromAddress, to: toEmail, subject: subject, text: content })
+                            body: JSON.stringify({ from: fromAddress, to: toEmail, subject, text: content })
                         });
 
                         if (sendRes.ok) {
                             await fetch(`https://api.telegram.org/bot${tgBotToken}/sendMessage`, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ chat_id: incomingChatId, text: `✅ 邮件发射成功！\n发件人: ${fromAddress}\n收件人: ${toEmail}` })
-                            });
-                        } else {
-                            const errorData = await sendRes.text();
-                            await fetch(`https://api.telegram.org/bot${tgBotToken}/sendMessage`, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ chat_id: incomingChatId, text: `❌ 发送失败，Resend 报错：${errorData}` })
+                                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ chat_id: incomingChatId, text: `✅ 网页发射成功！\n发件人: ${fromAddress}\n收件人: ${toEmail}` })
                             });
                         }
                     }
-                } catch (e) {
-                    await fetch(`https://api.telegram.org/bot${tgBotToken}/sendMessage`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ chat_id: incomingChatId, text: `❌ 网页数据解析异常：${e.message}` })
-                    });
-                }
+                } catch (e) {}
                 return c.text('OK');
             }
 
-            // ===== 🔥 核心升级 2：当你发送 /send 时，不再要求输参数，直接弹出一个面板按钮！ =====
             const text = message.text;
-            if (text && text.startsWith('/send')) {
-                // 拼接我们在下一步将要配置的网页大门地址
-                const webAppUrl = customDomain ? `${domainUtils.toOssDomain(customDomain)}/api/telegram/webapp` : 'https://www.cloudflare.com/404';
+            if (!text) return c.text('OK');
 
-                await fetch(`https://api.telegram.org/bot${tgBotToken}/sendMessage`, {
+            // 2. 如果发送的是完整快捷指令（保留备用）
+            if (text.startsWith('/send ')) {
+                const parts = text.split(' ');
+                if (parts.length >= 5) {
+                    let defaultDomain = Object.keys(resendTokens || {})[0] || '';
+                    let fromInput = parts[1];
+                    let fromAddress = fromInput.includes('@') ? fromInput : `${fromInput}@${defaultDomain}`;
+                    const toEmail = parts[2];
+                    const subject = parts[3];
+                    const emailBody = parts.slice(4).join(' ');
+
+                    const fromDomain = fromAddress.split('@')[1];
+                    const resendKey = resendTokens ? resendTokens[fromDomain] : null;
+
+                    if (resendKey) {
+                        const sendRes = await fetch('https://api.resend.com/emails', {
+                            method: 'POST',
+                            headers: { 'Authorization': `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ from: fromAddress, to: toEmail, subject: subject, text: emailBody })
+                        });
+                        if (sendRes.ok) {
+                            await fetch(`https://api.telegram.org/bot${tgBotToken}/sendMessage`, {
+                                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ chat_id: incomingChatId, text: `✅ 快捷发信成功！\n收件人: ${toEmail}` })
+                            });
+                        }
+                    }
+                    return c.text('OK');
+                }
+            }
+
+            // 3. 只有敲 /send 的时候，唤出小程序面板！
+            if (text === '/send') {
+                // 直接从当前请求中提取最准确的 URL，绝对包含 https://
+                const currentUrl = new URL(c.req.url);
+                const webAppUrl = currentUrl.origin + '/api/telegram/webapp';
+
+                const res = await fetch(`https://api.telegram.org/bot${tgBotToken}/sendMessage`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         chat_id: incomingChatId,
-                        text: "✨ 欢迎使用云邮快速发件系统！\n请点击下方按钮打开专属写信面板：",
+                        text: "✨ 欢迎使用云邮发件面板！\n👇 请点击你的聊天输入框下方的【📝 打开写信面板】按钮！",
+                        // 改为原生键盘！这样才能成功传递数据回服务器
                         reply_markup: {
-                            inline_keyboard: [[{ text: '📝 打开写信面板', web_app: { url: webAppUrl } }]]
+                            keyboard: [[{ text: '📝 打开写信面板', web_app: { url: webAppUrl } }]],
+                            resize_keyboard: true,
+                            is_persistent: true
                         }
                     })
                 });
-                return c.text('OK');
+                
+                // 如果这次 Telegram 还敢报错，直接把错误怼在聊天框里抓现行！
+                if (!res.ok) {
+                    const err = await res.text();
+                    await fetch(`https://api.telegram.org/bot${tgBotToken}/sendMessage`, {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ chat_id: incomingChatId, text: `⚠️ 按钮生成失败，错误原因：${err}` })
+                    });
+                }
             }
-
             return c.text('OK');
         } catch (error) {
             return c.text('OK');
         }
     }
-}
+};
 
-export default telegramService
+export default telegramService;
