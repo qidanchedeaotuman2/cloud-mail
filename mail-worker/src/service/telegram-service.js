@@ -39,7 +39,6 @@ const telegramService = {
         const { tgBotToken, tgChatId, customDomain, tgMsgTo, tgMsgFrom, tgMsgText } = await settingService.query(c);
         const tgChatIds = tgChatId.split(',');
         const jwtToken = await jwtUtils.generateToken(c, { emailId: email.emailId });
-        // 为了安全起见，这里也加上 https:// 的强制保障
         let safeDomain = customDomain.startsWith('http') ? customDomain : `https://${customDomain}`;
         const webAppUrl = customDomain ? `${safeDomain}/api/telegram/getEmail/${jwtToken}` : 'https://www.cloudflare.com/404';
 
@@ -59,7 +58,7 @@ const telegramService = {
         }));
 
         // ==========================================
-        // 2. 新增：企业微信 自建应用（瓦力） 双重推送逻辑
+        // 2. 新增：企业微信 自建应用（瓦力） 双重推送逻辑 (排错侦探版)
         // ==========================================
         try {
             const corpId = c.env && c.env.WECHAT_CORPID;
@@ -67,34 +66,64 @@ const telegramService = {
             const agentId = c.env && c.env.WECHAT_AGENTID;
             const toUser = (c.env && c.env.WECHAT_TOUSER) || '@all';
 
-            if (corpId && secret && agentId) {
-                // 第一步：请求 Access Token
-                const tokenRes = await fetch(`https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid=${corpId}&corpsecret=${secret}`);
-                const tokenData = await tokenRes.json();
+            // 侦探 1 号：检查变量是否读取成功
+            if (!corpId || !secret || !agentId) {
+                await fetch(`https://api.telegram.org/bot${tgBotToken}/sendMessage`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ chat_id: tgChatIds[0], text: `⚠️ 企微推送未触发：未能从 CF 面板读取到变量，请检查变量名是否带有空格或拼写错误。` })
+                });
+                return; // 提前结束
+            }
 
-                if (tokenData.errcode === 0 && tokenData.access_token) {
-                    const safeSubject = email.subject || '无主题';
-                    const safeFrom = email.from || '未知发件人';
-                    const safeTo = email.to || '未知收件人';
-                    const textPreview = (email.text || '无纯文本正文').substring(0, 150).replace(/\n/g, '  ') + '...';
+            // 第一步：请求 Access Token
+            const tokenRes = await fetch(`https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid=${corpId}&corpsecret=${secret}`);
+            const tokenData = await tokenRes.json();
 
-                    // 第二步：使用 Token 发送 Markdown 卡片
-                    await fetch(`https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${tokenData.access_token}`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            touser: toUser,
-                            msgtype: "markdown",
-                            agentid: parseInt(agentId),
-                            markdown: {
-                                content: `<font color="info">**收到新邮件啦！**</font>\n> **发件：**<font color="comment">${safeFrom}</font>\n> **收件：**<font color="comment">${safeTo}</font>\n> **主题：**<font color="comment">${safeSubject}</font>\n\n**内容预览：**\n${textPreview}\n\n[前往查看完整邮件网页](${webAppUrl})`
-                            }
-                        })
+            // 侦探 2 号：检查 Token 是否获取成功
+            if (tokenData.errcode !== 0) {
+                await fetch(`https://api.telegram.org/bot${tgBotToken}/sendMessage`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ chat_id: tgChatIds[0], text: `⚠️ 企微 Token 获取失败！错误码: ${tokenData.errcode}，原因: ${tokenData.errmsg}` })
+                });
+                return; // 提前结束
+            }
+
+            if (tokenData.access_token) {
+                const safeSubject = email.subject || '无主题';
+                const safeFrom = email.from || '未知发件人';
+                const safeTo = email.to || '未知收件人';
+                const textPreview = (email.text || '无纯文本正文').substring(0, 150).replace(/\n/g, '  ') + '...';
+
+                // 第二步：使用 Token 发送 Markdown 卡片
+                const sendRes = await fetch(`https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${tokenData.access_token}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        touser: toUser,
+                        msgtype: "markdown",
+                        agentid: parseInt(agentId),
+                        markdown: {
+                            content: `<font color="info">**收到新邮件啦！**</font>\n> **发件：**<font color="comment">${safeFrom}</font>\n> **收件：**<font color="comment">${safeTo}</font>\n> **主题：**<font color="comment">${safeSubject}</font>\n\n**内容预览：**\n${textPreview}\n\n[前往查看完整邮件网页](${webAppUrl})`
+                        }
+                    })
+                });
+                
+                const sendResult = await sendRes.json();
+                
+                // 侦探 3 号：检查卡片是否发送成功
+                if (sendResult.errcode !== 0) {
+                    await fetch(`https://api.telegram.org/bot${tgBotToken}/sendMessage`, {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ chat_id: tgChatIds[0], text: `⚠️ 企微卡片发送失败！错误码: ${sendResult.errcode}，原因: ${sendResult.errmsg}` })
                     });
                 }
             }
         } catch (wechatErr) {
-            // 静默处理错误，不影响 TG
+            // 侦探 4 号：捕捉代码层面的崩溃
+            await fetch(`https://api.telegram.org/bot${tgBotToken}/sendMessage`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ chat_id: tgChatIds[0], text: `⚠️ 企微代码执行异常: ${wechatErr.message}` })
+            });
         }
     },
 
@@ -254,7 +283,6 @@ const telegramService = {
 
             // 3. 只有敲 /send 的时候，唤出小程序面板！
             if (text === '/send') {
-                // 直接从当前请求中提取最准确的 URL，绝对包含 https://
                 const currentUrl = new URL(c.req.url);
                 const webAppUrl = currentUrl.origin + '/api/telegram/webapp';
 
@@ -264,7 +292,6 @@ const telegramService = {
                     body: JSON.stringify({
                         chat_id: incomingChatId,
                         text: "✨ 欢迎使用云邮发件面板！\n👇 请点击你的聊天输入框下方的【📝 打开写信面板】按钮！",
-                        // 改为原生键盘！这样才能成功传递数据回服务器
                         reply_markup: {
                             keyboard: [[{ text: '📝 打开写信面板', web_app: { url: webAppUrl } }]],
                             resize_keyboard: true,
@@ -273,7 +300,6 @@ const telegramService = {
                     })
                 });
                 
-                // 如果这次 Telegram 还敢报错，直接把错误怼在聊天框里抓现行！
                 if (!res.ok) {
                     const err = await res.text();
                     await fetch(`https://api.telegram.org/bot${tgBotToken}/sendMessage`, {
