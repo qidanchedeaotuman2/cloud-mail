@@ -59,31 +59,42 @@ const telegramService = {
         }));
 
         // ==========================================
-        // 2. 新增：企业微信 Webhook 双重推送逻辑
+        // 2. 新增：企业微信 自建应用（瓦力） 双重推送逻辑
         // ==========================================
         try {
-            // 尝试读取环境变量中的企业微信 Webhook
-            const wechatWebhook = c.env && c.env.WECHAT_WEBHOOK;
-            if (wechatWebhook) {
-                const safeSubject = email.subject || '无主题';
-                const safeFrom = email.from || '未知发件人';
-                const safeTo = email.to || '未知收件人';
-                // 截取前 150 个字符作为预览，避免企微卡片过长
-                const textPreview = (email.text || '无纯文本正文').substring(0, 150).replace(/\n/g, '  ') + '...';
+            const corpId = c.env && c.env.WECHAT_CORPID;
+            const secret = c.env && c.env.WECHAT_SECRET;
+            const agentId = c.env && c.env.WECHAT_AGENTID;
+            const toUser = (c.env && c.env.WECHAT_TOUSER) || '@all';
 
-                await fetch(wechatWebhook, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        msgtype: "markdown",
-                        markdown: {
-                            content: `<font color="info">**收到新邮件啦！**</font>\n> **发件：**<font color="comment">${safeFrom}</font>\n> **收件：**<font color="comment">${safeTo}</font>\n> **主题：**<font color="comment">${safeSubject}</font>\n\n**内容预览：**\n${textPreview}\n\n[前往查看完整邮件网页](${webAppUrl})`
-                        }
-                    })
-                });
+            if (corpId && secret && agentId) {
+                // 第一步：请求 Access Token
+                const tokenRes = await fetch(`https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid=${corpId}&corpsecret=${secret}`);
+                const tokenData = await tokenRes.json();
+
+                if (tokenData.errcode === 0 && tokenData.access_token) {
+                    const safeSubject = email.subject || '无主题';
+                    const safeFrom = email.from || '未知发件人';
+                    const safeTo = email.to || '未知收件人';
+                    const textPreview = (email.text || '无纯文本正文').substring(0, 150).replace(/\n/g, '  ') + '...';
+
+                    // 第二步：使用 Token 发送 Markdown 卡片
+                    await fetch(`https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${tokenData.access_token}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            touser: toUser,
+                            msgtype: "markdown",
+                            agentid: parseInt(agentId),
+                            markdown: {
+                                content: `<font color="info">**收到新邮件啦！**</font>\n> **发件：**<font color="comment">${safeFrom}</font>\n> **收件：**<font color="comment">${safeTo}</font>\n> **主题：**<font color="comment">${safeSubject}</font>\n\n**内容预览：**\n${textPreview}\n\n[前往查看完整邮件网页](${webAppUrl})`
+                            }
+                        })
+                    });
+                }
             }
         } catch (wechatErr) {
-            // 静默处理错误，即使企微没配置好，也绝对不影响系统和 TG 的正常运行
+            // 静默处理错误，不影响 TG
         }
     },
 
