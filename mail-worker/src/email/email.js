@@ -28,7 +28,7 @@ async function sendWechatCard(env, params) {
         textcard: {
             title: "📩 收到新邮件",
             description: `<div class="gray">发件人：${from}</div><div class="normal">主题：${subject}</div><div class="highlight">收件人：${to}</div>`,
-            url: "https://mail.558080.xyz", // 如果你的域名变了，这里记得改成最新的网页后台地址
+            url: "https://mail.orzz.cc.cd", // 如果你的域名变了，这里记得改成最新的网页后台地址
             btntxt: "打开邮箱查看"
         }
     };
