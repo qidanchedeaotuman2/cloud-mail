@@ -58,34 +58,41 @@ const telegramService = {
         }));
 
         // ==========================================
-        // 2. 新增：企业微信 自建应用（瓦力） 双重推送逻辑 (排错侦探版)
+        // 2. 新增：企业微信 自建应用 (华为云反代兼容版)
         // ==========================================
         try {
-            const corpId = c.env && c.env.WECHAT_CORPID;
-            const secret = c.env && c.env.WECHAT_SECRET;
-            const agentId = c.env && c.env.WECHAT_AGENTID;
-            const toUser = (c.env && c.env.WECHAT_TOUSER) || '@all';
+            // 这里完全换成了你 Bark 截图里使用的变量名
+            const corpId = c.env && c.env.QYWX_CORPID;
+            const secret = c.env && c.env.QYWX_SECRET;
+            const agentId = c.env && c.env.QYWX_AGENTID;
+            const toUser = (c.env && c.env.QYWX_TOUSER) || '@all';
+            
+            // 获取代理地址，并自动去除末尾可能带有的斜杠，防止拼错 URL
+            let qywxApiBase = "https://qyapi.weixin.qq.com";
+            if (c.env && c.env.QYWX_PROXY) {
+                qywxApiBase = c.env.QYWX_PROXY.trim().replace(/\/$/, '');
+            }
 
-            // 侦探 1 号：检查变量是否读取成功
+            // 侦探 1 号：检查核心变量
             if (!corpId || !secret || !agentId) {
                 await fetch(`https://api.telegram.org/bot${tgBotToken}/sendMessage`, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ chat_id: tgChatIds[0], text: `⚠️ 企微推送未触发：未能从 CF 面板读取到变量，请检查变量名是否带有空格或拼写错误。` })
+                    body: JSON.stringify({ chat_id: tgChatIds[0], text: `⚠️ 企微推送未触发：缺少 QYWX_CORPID, QYWX_SECRET 或 QYWX_AGENTID 变量。` })
                 });
-                return; // 提前结束
+                return; 
             }
 
-            // 第一步：请求 Access Token
-            const tokenRes = await fetch(`https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid=${corpId}&corpsecret=${secret}`);
+            // 第一步：通过华为云反代请求 Access Token
+            const tokenRes = await fetch(`${qywxApiBase}/cgi-bin/gettoken?corpid=${corpId}&corpsecret=${secret}`);
             const tokenData = await tokenRes.json();
 
-            // 侦探 2 号：检查 Token 是否获取成功
+            // 侦探 2 号：检查 Token 获取
             if (tokenData.errcode !== 0) {
                 await fetch(`https://api.telegram.org/bot${tgBotToken}/sendMessage`, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ chat_id: tgChatIds[0], text: `⚠️ 企微 Token 获取失败！错误码: ${tokenData.errcode}，原因: ${tokenData.errmsg}` })
+                    body: JSON.stringify({ chat_id: tgChatIds[0], text: `⚠️ 企微 Token 获取失败(走反代)！错误码: ${tokenData.errcode}，原因: ${tokenData.errmsg}` })
                 });
-                return; // 提前结束
+                return; 
             }
 
             if (tokenData.access_token) {
@@ -94,8 +101,8 @@ const telegramService = {
                 const safeTo = email.to || '未知收件人';
                 const textPreview = (email.text || '无纯文本正文').substring(0, 150).replace(/\n/g, '  ') + '...';
 
-                // 第二步：使用 Token 发送 Markdown 卡片
-                const sendRes = await fetch(`https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${tokenData.access_token}`, {
+                // 第二步：通过华为云反代发送 Markdown 卡片
+                const sendRes = await fetch(`${qywxApiBase}/cgi-bin/message/send?access_token=${tokenData.access_token}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -110,19 +117,18 @@ const telegramService = {
                 
                 const sendResult = await sendRes.json();
                 
-                // 侦探 3 号：检查卡片是否发送成功
+                // 侦探 3 号：检查卡片发送
                 if (sendResult.errcode !== 0) {
                     await fetch(`https://api.telegram.org/bot${tgBotToken}/sendMessage`, {
                         method: 'POST', headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ chat_id: tgChatIds[0], text: `⚠️ 企微卡片发送失败！错误码: ${sendResult.errcode}，原因: ${sendResult.errmsg}` })
+                        body: JSON.stringify({ chat_id: tgChatIds[0], text: `⚠️ 企微卡片发送失败(走反代)！错误码: ${sendResult.errcode}，原因: ${sendResult.errmsg}` })
                     });
                 }
             }
         } catch (wechatErr) {
-            // 侦探 4 号：捕捉代码层面的崩溃
             await fetch(`https://api.telegram.org/bot${tgBotToken}/sendMessage`, {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ chat_id: tgChatIds[0], text: `⚠️ 企微代码执行异常: ${wechatErr.message}` })
+                body: JSON.stringify({ chat_id: tgChatIds[0], text: `⚠️ 企微反代代码执行异常: ${wechatErr.message}` })
             });
         }
     },
@@ -219,7 +225,6 @@ const telegramService = {
 
             if (!allowedChatIds.includes(incomingChatId)) return c.text('OK');
 
-            // 1. 处理 Web App 传回来的数据
             if (message.web_app_data) {
                 try {
                     const data = JSON.parse(message.web_app_data.data);
@@ -228,7 +233,7 @@ const telegramService = {
                         const fromDomain = fromAddress.split('@')[1];
                         const resendKey = resendTokens ? resendTokens[fromDomain] : null;
 
-                        if (!resendKey) return c.text('OK'); // 防止报错
+                        if (!resendKey) return c.text('OK'); 
 
                         const sendRes = await fetch('https://api.resend.com/emails', {
                             method: 'POST',
@@ -250,7 +255,6 @@ const telegramService = {
             const text = message.text;
             if (!text) return c.text('OK');
 
-            // 2. 如果发送的是完整快捷指令（保留备用）
             if (text.startsWith('/send ')) {
                 const parts = text.split(' ');
                 if (parts.length >= 5) {
@@ -281,7 +285,6 @@ const telegramService = {
                 }
             }
 
-            // 3. 只有敲 /send 的时候，唤出小程序面板！
             if (text === '/send') {
                 const currentUrl = new URL(c.req.url);
                 const webAppUrl = currentUrl.origin + '/api/telegram/webapp';
