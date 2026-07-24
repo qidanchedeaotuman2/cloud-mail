@@ -97,8 +97,10 @@ const telegramService = {
 
             if (tokenData.access_token) {
                 const safeSubject = email.subject || '无主题';
-                const safeFrom = email.from || '未知发件人';
-                const safeTo = email.to || '未知收件人';
+                // 增加多重字段匹配，完美兼容数据库真实字段名
+                const safeFrom = email.fromAddress || email.sender || email.from || '未知发件人';
+                const safeTo = email.toAddress || email.recipient || email.to || '未知收件人';
+                
                 const textPreview = (email.text || '无纯文本正文').substring(0, 150).replace(/\n/g, '  ') + '...';
 
                 const sendRes = await fetch(`${qywxApiBase}/cgi-bin/message/send?access_token=${tokenData.access_token}`, {
