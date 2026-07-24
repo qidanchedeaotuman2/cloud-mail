@@ -34,7 +34,7 @@ const telegramService = {
 
     async sendEmailToBot(c, email) {
         // ==========================================
-        // 1. 原有收取邮件转发给 TG 的逻辑（原封不动保留）
+        // 1. 原有收取邮件转发给 TG 的逻辑
         // ==========================================
         const { tgBotToken, tgChatId, customDomain, tgMsgTo, tgMsgFrom, tgMsgText } = await settingService.query(c);
         const tgChatIds = tgChatId.split(',');
@@ -58,7 +58,7 @@ const telegramService = {
         }));
 
         // ==========================================
-        // 2. 新增：企业微信 自建应用 (华为云反代 + Textcard卡片完美适配个人微信)
+        // 2. 企微 Textcard卡片 (优先使用 QYWX_CUSTOM_DOMAIN)
         // ==========================================
         try {
             const corpId = c.env && c.env.QYWX_CORPID;
@@ -70,6 +70,11 @@ const telegramService = {
             if (c.env && c.env.QYWX_PROXY) {
                 qywxApiBase = c.env.QYWX_PROXY.trim().replace(/\/$/, '');
             }
+
+            // 获取微信专属域名：如果有变量就用变量，没有就退回默认 domain
+            let wxDomain = (c.env && c.env.QYWX_CUSTOM_DOMAIN) ? c.env.QYWX_CUSTOM_DOMAIN.trim() : customDomain;
+            let safeWxDomain = wxDomain.startsWith('http') ? wxDomain : `https://${wxDomain}`;
+            const wxWebAppUrl = wxDomain ? `${safeWxDomain}/api/telegram/getEmail/${jwtToken}` : 'https://www.cloudflare.com/404';
 
             if (!corpId || !secret || !agentId) {
                 await fetch(`https://api.telegram.org/bot${tgBotToken}/sendMessage`, {
@@ -96,7 +101,6 @@ const telegramService = {
                 const safeTo = email.to || '未知收件人';
                 const textPreview = (email.text || '无纯文本正文').substring(0, 150).replace(/\n/g, '  ') + '...';
 
-                // 第二步：通过华为云反代发送 Textcard 卡片 (完美兼容个人微信展示)
                 const sendRes = await fetch(`${qywxApiBase}/cgi-bin/message/send?access_token=${tokenData.access_token}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -107,7 +111,7 @@ const telegramService = {
                         textcard: {
                             title: `收到新邮件：${safeSubject}`,
                             description: `发件人：${safeFrom}\n收件人：${safeTo}\n\n内容预览：\n${textPreview}`,
-                            url: webAppUrl,
+                            url: wxWebAppUrl, 
                             btntxt: "查看完整邮件"
                         }
                     })
