@@ -58,22 +58,19 @@ const telegramService = {
         }));
 
         // ==========================================
-        // 2. 新增：企业微信 自建应用 (华为云反代兼容版)
+        // 2. 新增：企业微信 自建应用 (华为云反代 + Textcard卡片完美适配个人微信)
         // ==========================================
         try {
-            // 这里完全换成了你 Bark 截图里使用的变量名
             const corpId = c.env && c.env.QYWX_CORPID;
             const secret = c.env && c.env.QYWX_SECRET;
             const agentId = c.env && c.env.QYWX_AGENTID;
             const toUser = (c.env && c.env.QYWX_TOUSER) || '@all';
             
-            // 获取代理地址，并自动去除末尾可能带有的斜杠，防止拼错 URL
             let qywxApiBase = "https://qyapi.weixin.qq.com";
             if (c.env && c.env.QYWX_PROXY) {
                 qywxApiBase = c.env.QYWX_PROXY.trim().replace(/\/$/, '');
             }
 
-            // 侦探 1 号：检查核心变量
             if (!corpId || !secret || !agentId) {
                 await fetch(`https://api.telegram.org/bot${tgBotToken}/sendMessage`, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -82,11 +79,9 @@ const telegramService = {
                 return; 
             }
 
-            // 第一步：通过华为云反代请求 Access Token
             const tokenRes = await fetch(`${qywxApiBase}/cgi-bin/gettoken?corpid=${corpId}&corpsecret=${secret}`);
             const tokenData = await tokenRes.json();
 
-            // 侦探 2 号：检查 Token 获取
             if (tokenData.errcode !== 0) {
                 await fetch(`https://api.telegram.org/bot${tgBotToken}/sendMessage`, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -101,23 +96,25 @@ const telegramService = {
                 const safeTo = email.to || '未知收件人';
                 const textPreview = (email.text || '无纯文本正文').substring(0, 150).replace(/\n/g, '  ') + '...';
 
-                // 第二步：通过华为云反代发送 Markdown 卡片
+                // 第二步：通过华为云反代发送 Textcard 卡片 (完美兼容个人微信展示)
                 const sendRes = await fetch(`${qywxApiBase}/cgi-bin/message/send?access_token=${tokenData.access_token}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         touser: toUser,
-                        msgtype: "markdown",
+                        msgtype: "textcard",
                         agentid: parseInt(agentId),
-                        markdown: {
-                            content: `<font color="info">**收到新邮件啦！**</font>\n> **发件：**<font color="comment">${safeFrom}</font>\n> **收件：**<font color="comment">${safeTo}</font>\n> **主题：**<font color="comment">${safeSubject}</font>\n\n**内容预览：**\n${textPreview}\n\n[前往查看完整邮件网页](${webAppUrl})`
+                        textcard: {
+                            title: `收到新邮件：${safeSubject}`,
+                            description: `发件人：${safeFrom}\n收件人：${safeTo}\n\n内容预览：\n${textPreview}`,
+                            url: webAppUrl,
+                            btntxt: "查看完整邮件"
                         }
                     })
                 });
                 
                 const sendResult = await sendRes.json();
                 
-                // 侦探 3 号：检查卡片发送
                 if (sendResult.errcode !== 0) {
                     await fetch(`https://api.telegram.org/bot${tgBotToken}/sendMessage`, {
                         method: 'POST', headers: { 'Content-Type': 'application/json' },
